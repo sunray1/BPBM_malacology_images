@@ -1,6 +1,7 @@
 import os
 import logging
 import boto3
+import mimetypes
 from botocore.exceptions import NoCredentialsError
 from utils import (
     get_db_connection,
@@ -204,15 +205,49 @@ def add_to_google_sheets(
         logging.error(f"Failed to add record to Google Sheets Database")
         logging.error(e)
 
-def add_to_digital_ocean(file_path, object_name):
-    """Uploads an image to DigitalOcean Space"""
+def add_to_digital_ocean(folder_path, object_prefix, destination_path):
+    """Uploads images from a folder to DigitalOcean Space, including special handling for 'pilsbry' subfolder."""
+    uploaded_urls = []
+    original_files = []
+
     try:
-        client.upload_file(file_path, config["digital_ocean"]["SPACE_NAME"], object_name)
-        print(f"Uploaded {file_path} to {config['digital_ocean']['SPACE_NAME']}/{object_name}")
-        return f"https://{config['digital_ocean']['SPACE_NAME']}.{REGION}.digitaloceanspaces.com/{object_name}"
+        space_name = config["digital_ocean"]["SPACE_NAME"]
+        region = config["digital_ocean"]["REGION"]
+        base_url = f"https://{space_name}.{region}.cdn.digitaloceanspaces.com/"
+
+        # Check for 'pilsbry' subfolder and process images within it
+        pilsbry_folder = os.path.join(folder_path, "pilsbry")
+        if os.path.exists(pilsbry_folder) and os.path.isdir(pilsbry_folder):
+            for file_name in os.listdir(pilsbry_folder):
+                file_path = os.path.join(pilsbry_folder, file_name)
+
+                if os.path.isfile(file_path):
+                    # Add '_pilsbry' suffix before file extension
+                    name, ext = os.path.splitext(file_name)
+                    new_file_name = f"{name}_pilsbry{ext}"
+                    new_file_path = os.path.join(folder_path, new_file_name)
+                    #move_files(file_path, new_file_path)                
+                    content_type, _ = mimetypes.guess_type(new_file_path)
+
+                    object_name = f"{object_prefix}/{new_file_name}"
+                    client.upload_file(file_path, space_name, object_name, ExtraArgs={
+                        'ACL': 'public-read',
+                        'ContentType': content_type or 'image/jpeg'
+                    })
+                    uploaded_urls.append(f"{base_url}{object_name}")
+                    original_files.append(f"{destination_path}/{file_name}")
+
+        if len(uploaded_urls) > 0:
+            print(f"Uploaded {len(uploaded_urls)} files to Digital Ocean.")
+        return zip(original_files, uploaded_urls)
+
     except NoCredentialsError:
-        print("Credentials not available")
-        return None
+        logging.error("Digital Ocean credentials not available.")
+        return []
+    except Exception as e:
+        logging.error(f"Error uploading to Digital Ocean: {e}")
+        return []
+
     
 def process_image_row(row):
     """Processes a single row from Google Sheets and moves images accordingly."""
@@ -413,48 +448,50 @@ def process_image_row(row):
             destination_path = os.path.join(base_folder, "Representatives", group_folder, foldername)
 
         # Create necessary folders, move files, and delete source folder
-        create_folder(destination_path)
-        add_to_google_sheets(
-            occid,
-            specimenid,
-            phylum,
-            taxaclass,
-            family,
-            subfamily,
-            sciname,
-            specimen_info.get("identificationQualifier", "") if specimen_info else "",
-            catalognumber,
-            specimennumber,
-            imagetype,
-            specimentype,
-            specimen_info.get("typestatus", "") if specimen_info else "",
-            specimen_info.get("fieldnumber", "") if specimen_info else "",
-            boxnumber,
-            specimen_info.get("country", "") if specimen_info else "",
-            specimen_info.get("stateProvince", "") if specimen_info else "",
-            specimen_info.get("island", "") if specimen_info else "",
-            specimen_info.get("locality", "") if specimen_info else "",
-            plated,
-            destination_path
-        )
-        add_to_digital_ocean()
-        if imagetype == "Specimen" and outreachduplicate == "Yes":
-            if subfamily:
-                outreach_destination_path = os.path.join(base_folder, "Outreach", "Gastropoda", family, subfamily, new_foldername)
-                taxaclass = "Gastropoda"
-            else:
-                outreach_destination_path = os.path.join(base_folder, "Outreach", "Gastropoda", family, new_foldername)
-                taxaclass = "Gastropoda"
-            create_folder(outreach_destination_path)
-            copy_files(os.path.join(staging_folder, foldername, "*"), outreach_destination_path)
-        move_files(os.path.join(staging_folder, foldername, "*"), destination_path)
+        #create_folder(destination_path)
+        #add_to_google_sheets(
+        #     occid,
+        #     specimenid,
+        #     phylum,
+        #     taxaclass,
+        #     family,
+        #     subfamily,
+        #     sciname,
+        #     specimen_info.get("identificationQualifier", "") if specimen_info else "",
+        #     catalognumber,
+        #     specimennumber,
+        #     imagetype,
+        #     specimentype,
+        #     specimen_info.get("typestatus", "") if specimen_info else "",
+        #     specimen_info.get("fieldnumber", "") if specimen_info else "",
+        #     boxnumber,
+        #     specimen_info.get("country", "") if specimen_info else "",
+        #     specimen_info.get("stateProvince", "") if specimen_info else "",
+        #     specimen_info.get("island", "") if specimen_info else "",
+        #     specimen_info.get("locality", "") if specimen_info else "",
+        #     plated,
+        #     destination_path
+        # )
+        if imagetype in ["Specimen", "Type", "Captive"]:
+            uploaded_files = add_to_digital_ocean(os.path.join(staging_folder, foldername), "jpg/small", destination_path)
+            print(list(uploaded_files))
+        # if imagetype == "Specimen" and outreachduplicate == "Yes":
+        #     if subfamily:
+        #         outreach_destination_path = os.path.join(base_folder, "Outreach", "Gastropoda", family, subfamily, new_foldername)
+        #         taxaclass = "Gastropoda"
+        #     else:
+        #         outreach_destination_path = os.path.join(base_folder, "Outreach", "Gastropoda", family, new_foldername)
+        #         taxaclass = "Gastropoda"
+        #     create_folder(outreach_destination_path)
+        #     copy_files(os.path.join(staging_folder, foldername, "*"), outreach_destination_path)
+        #move_files(os.path.join(staging_folder, foldername, "*"), destination_path)
         
-        if delete_folder(os.path.join(staging_folder, foldername)):
-           rownum = delete_from_staging_sheet(rownum)
-           moved_folders_count += 1
-        else:
-            logging.warning(f"Skipping deletion from staging sheet since folder deletion failed for {foldername}.")
-            error_folders_count += 1
+        # if delete_folder(os.path.join(staging_folder, foldername)):
+        #    rownum = delete_from_staging_sheet(rownum)
+        #    moved_folders_count += 1
+        # else:
+        #     logging.warning(f"Skipping deletion from staging sheet since folder deletion failed for {foldername}.")
+        #     error_folders_count += 1
 
         logging.info(f"Successfully moved {foldername} to {destination_path}")
 
@@ -506,6 +543,7 @@ def process_staging_data():
             print("\n" + "-" * 50 + "\n")
             process_image_row(row)
             rownum += 1
+            exit()
 
     except Exception as e:
         logging.critical("Failed to retrieve Google Sheets data!")
