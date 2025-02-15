@@ -1,6 +1,7 @@
 import os
 import logging
 import boto3
+import uuid
 import mimetypes
 from botocore.exceptions import NoCredentialsError
 from utils import (
@@ -205,6 +206,15 @@ def add_to_google_sheets(
         logging.error(f"Failed to add record to Google Sheets Database")
         logging.error(e)
 
+def has_pilsbry_files(folder_path):
+    """Checks if the 'pilsbry' subfolder exists and contains files."""
+    pilsbry_folder = os.path.join(folder_path, "pilsbry")
+    
+    if os.path.exists(pilsbry_folder) and os.path.isdir(pilsbry_folder):
+        return any(os.path.isfile(os.path.join(pilsbry_folder, f)) for f in os.listdir(pilsbry_folder))
+
+    return False
+
 def add_to_digital_ocean(folder_path, object_prefix, destination_path):
     """Uploads images from a folder to DigitalOcean Space, including special handling for 'pilsbry' subfolder."""
     uploaded_urls = []
@@ -215,27 +225,31 @@ def add_to_digital_ocean(folder_path, object_prefix, destination_path):
         region = config["digital_ocean"]["REGION"]
         base_url = f"https://{space_name}.{region}.cdn.digitaloceanspaces.com/"
 
-        # Check for 'pilsbry' subfolder and process images within it
         pilsbry_folder = os.path.join(folder_path, "pilsbry")
-        if os.path.exists(pilsbry_folder) and os.path.isdir(pilsbry_folder):
-            for file_name in os.listdir(pilsbry_folder):
-                file_path = os.path.join(pilsbry_folder, file_name)
+        for file_name in os.listdir(pilsbry_folder):
+            file_path = os.path.join(pilsbry_folder, file_name)
 
-                if os.path.isfile(file_path):
-                    # Add '_pilsbry' suffix before file extension
-                    name, ext = os.path.splitext(file_name)
-                    new_file_name = f"{name}_pilsbry{ext}"
-                    new_file_path = os.path.join(folder_path, new_file_name)
-                    #move_files(file_path, new_file_path)                
-                    content_type, _ = mimetypes.guess_type(new_file_path)
-
-                    object_name = f"{object_prefix}/{new_file_name}"
-                    client.upload_file(file_path, space_name, object_name, ExtraArgs={
-                        'ACL': 'public-read',
-                        'ContentType': content_type or 'image/jpeg'
-                    })
-                    uploaded_urls.append(f"{base_url}{object_name}")
-                    original_files.append(f"{destination_path}/{file_name}")
+            if os.path.isfile(file_path):
+                name, ext = os.path.splitext(file_name)
+                new_file_name = f"{name}_pilsbry{ext}"
+                unique_id = str(uuid.uuid4())
+                unique_file_name = f"{unique_id}{ext}"
+                new_file_path = os.path.join(folder_path, new_file_name)
+                move_files(file_path, new_file_path)                
+                content_type, _ = mimetypes.guess_type(new_file_path)
+                object_name = f"{object_prefix}/{unique_file_name}"
+                
+                metadata = {
+                    'x-amz-meta-original-url': f"{destination_path}/{new_file_name}",
+                    'x-amz-meta-original-filename': new_file_name
+                }                    
+                client.upload_file(new_file_path, space_name, object_name, ExtraArgs={
+                    'ACL': 'public-read',
+                    'ContentType': content_type or 'image/jpeg',
+                    'Metadata': metadata
+                })
+                uploaded_urls.append(f"{base_url}{object_name}")
+                original_files.append(f"{destination_path}/{new_file_name}")
 
         if len(uploaded_urls) > 0:
             print(f"Uploaded {len(uploaded_urls)} files to Digital Ocean.")
@@ -247,8 +261,7 @@ def add_to_digital_ocean(folder_path, object_prefix, destination_path):
     except Exception as e:
         logging.error(f"Error uploading to Digital Ocean: {e}")
         return []
-
-    
+ 
 def process_image_row(row):
     """Processes a single row from Google Sheets and moves images accordingly."""
     global moved_folders_count, error_folders_count, rownum
@@ -472,8 +485,9 @@ def process_image_row(row):
         #     plated,
         #     destination_path
         # )
-        if imagetype in ["Specimen", "Type", "Captive"]:
+        if imagetype in ["Specimen", "Type", "Captive"] and has_pilsbry_files(os.path.join(staging_folder, foldername)):
             uploaded_files = add_to_digital_ocean(os.path.join(staging_folder, foldername), "jpg/small", destination_path)
+            
             print(list(uploaded_files))
         # if imagetype == "Specimen" and outreachduplicate == "Yes":
         #     if subfamily:
