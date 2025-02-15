@@ -1,4 +1,6 @@
 import os
+from PIL import Image
+import io
 import logging
 import boto3
 import uuid
@@ -215,8 +217,60 @@ def has_pilsbry_files(folder_path):
 
     return False
 
-def add_to_digital_ocean(folder_path, object_prefix, destination_path):
-    """Uploads images from a folder to DigitalOcean Space, including special handling for 'pilsbry' subfolder."""
+def resize_image(image_path, size_width):
+    """
+    Resizes an image in memory.
+
+    Args:
+        image_path (str): Path to the original image file.
+        size (int): Target width.
+
+    Returns:
+        BytesIO: The resized image stored in memory.
+    """
+    try:
+        with Image.open(image_path) as img:
+            img_format = img.format
+
+            original_width, original_height = img.size
+            aspect_ratio = original_height / original_width
+            target_height = int(size_width * aspect_ratio)
+
+            img = img.resize((size_width, target_height), Image.LANCZOS)
+            img_bytes = io.BytesIO()
+            img.save(img_bytes, format=img_format, quality=90)
+            img_bytes.seek(0)
+            return img_bytes
+
+    except Exception as e:
+        print(f"Error resizing image: {e}")
+        return None, None
+
+def get_new_filenames(file_name):
+    name, ext = os.path.splitext(file_name)
+    new_file_name = f"{name}_pilsbry{ext}"
+    unique_id = str(uuid.uuid4())
+    unique_file_name = f"{unique_id}{ext}"
+    return new_file_name, unique_file_name
+
+def add_to_digital_ocean(file_to_upload, object_prefix, destination_path, unique_file_name, suffix=""):
+    """
+    Uploads images to DigitalOcean Space.
+    
+    Handles both:
+    - File paths (regular images saved on disk)
+    - In-memory images (resized thumbnails)
+    
+    Args:
+        file_to_upload (str or BytesIO): File path or in-memory image object.
+        pilsbry_folder (str): Folder where original files are stored.
+        object_prefix (str): DigitalOcean object prefix.
+        destination_path (str): Final storage location.
+        unique_file_name (str, optional): The name to use for the uploaded file.
+        
+    Returns:
+        tuple: (original file path or name, uploaded URL)
+    """
     uploaded_urls = []
     original_files = []
 
@@ -225,35 +279,46 @@ def add_to_digital_ocean(folder_path, object_prefix, destination_path):
         region = config["digital_ocean"]["REGION"]
         base_url = f"https://{space_name}.{region}.cdn.digitaloceanspaces.com/"
 
-        pilsbry_folder = os.path.join(folder_path, "pilsbry")
-        for file_name in os.listdir(pilsbry_folder):
-            file_path = os.path.join(pilsbry_folder, file_name)
+        # Determine if input is a file path or an in-memory image
+        if isinstance(file_to_upload, str):  # File path case
+            file_path = file_to_upload
+            file_name = os.path.basename(file_path)
+            content_type, _ = mimetypes.guess_type(file_path)
+            object_name = f"{object_prefix}/{unique_file_name}"
 
-            if os.path.isfile(file_path):
-                name, ext = os.path.splitext(file_name)
-                new_file_name = f"{name}_pilsbry{ext}"
-                unique_id = str(uuid.uuid4())
-                unique_file_name = f"{unique_id}{ext}"
-                new_file_path = os.path.join(folder_path, new_file_name)
-                move_files(file_path, new_file_path)                
-                content_type, _ = mimetypes.guess_type(new_file_path)
-                object_name = f"{object_prefix}/{unique_file_name}"
-                
-                metadata = {
-                    'x-amz-meta-original-url': f"{destination_path}/{new_file_name}",
-                    'x-amz-meta-original-filename': new_file_name
-                }                    
-                client.upload_file(new_file_path, space_name, object_name, ExtraArgs={
-                    'ACL': 'public-read',
-                    'ContentType': content_type or 'image/jpeg',
-                    'Metadata': metadata
-                })
-                uploaded_urls.append(f"{base_url}{object_name}")
-                original_files.append(f"{destination_path}/{new_file_name}")
+            # Upload file from disk
+            client.upload_file(file_path, space_name, object_name, ExtraArgs={
+                'ACL': 'public-read',
+                'ContentType': content_type or 'image/jpeg',
+                'Metadata': {
+                    'x-amz-meta-original-url': f"{destination_path}/{file_name}",
+                    'x-amz-meta-original-filename': file_name
+                }
+            })
+            uploaded_urls.append(f"{base_url}{object_name}")
+            original_files.append(f"{destination_path}/{file_name}")
 
-        if len(uploaded_urls) > 0:
+        elif isinstance(file_to_upload, io.BytesIO):  # In-memory image case
+            name, ext = os.path.splitext(unique_file_name)
+            modified_file_name = f"{name}{suffix}{ext}"
+            object_name = f"{object_prefix}/{modified_file_name}"
+
+            # Upload in-memory image
+            client.upload_fileobj(file_to_upload, space_name, object_name, ExtraArgs={
+                'ACL': 'public-read',
+                'ContentType': content_type,
+                'Metadata': {
+                    'x-amz-meta-original-url': f"{destination_path}/{unique_file_name}",
+                    'x-amz-meta-original-filename': unique_file_name
+                }
+            })
+            uploaded_urls.append(f"{base_url}{object_name}")
+            original_files.append(f"{destination_path}/{unique_file_name}")
+
+        if uploaded_urls:
             print(f"Uploaded {len(uploaded_urls)} files to Digital Ocean.")
-        return zip(original_files, uploaded_urls)
+
+        return list(zip(original_files, uploaded_urls))
 
     except NoCredentialsError:
         logging.error("Digital Ocean credentials not available.")
@@ -261,7 +326,49 @@ def add_to_digital_ocean(folder_path, object_prefix, destination_path):
     except Exception as e:
         logging.error(f"Error uploading to Digital Ocean: {e}")
         return []
- 
+
+def add_to_pilsbry_db(db_conn, url, thumbnail_url, img_format, occid, source_identifier, local_url):
+    """
+    Adds an image record to the 'images' table in the database.
+
+    Args:
+        db_conn (mysql.connector.connection_cext.CMySQLConnection): Active database connection.
+        url (str): The full URL of the uploaded image.
+        thumbnail_url (str): The full URL of the thumbnail image.
+        img_format (str): Image format (JPEG, PNG, etc.).
+        occid (int): Occurrence ID associated with the image.
+        source_identifier (str): Unique identifier (UUID).
+        local_url (str): Local file path where the image is stored.
+
+    Returns:
+        bool: True if insertion is successful, False otherwise.
+    """
+    try:
+        cursor = db_conn.cursor()
+
+        # Define the query to insert into the images table
+        query = """
+            INSERT INTO images (url, thumbnailurl, format, owner, occid, sourceidentifier, localurl)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        
+        # Set values, owner is always "Bernice Pauahi Bishop Museum, Malacology"
+        values = (url, thumbnail_url, img_format, "Bernice Pauahi Bishop Museum, Malacology", occid, source_identifier, local_url)
+        
+        # Execute query
+        cursor.execute(query, values)
+        db_conn.commit()  # Commit the transaction
+
+        print(f"Successfully inserted image record for {url} into the database.")
+        return True
+
+    except mysql.connector.Error as e:
+        print(f"Error inserting into database: {e}")
+        return False
+    finally:
+        cursor.close()
+    
+    
 def process_image_row(row):
     """Processes a single row from Google Sheets and moves images accordingly."""
     global moved_folders_count, error_folders_count, rownum
@@ -486,8 +593,25 @@ def process_image_row(row):
         #     destination_path
         # )
         if imagetype in ["Specimen", "Type", "Captive"] and has_pilsbry_files(os.path.join(staging_folder, foldername)):
-            uploaded_files = add_to_digital_ocean(os.path.join(staging_folder, foldername), "jpg/small", destination_path)
+            pilsbry_folder = os.path.join(folder_path, "pilsbry")
+            for file_name in os.listdir(pilsbry_folder):
+                new_file_name, unique_file_name = get_new_filenames(file_name)
+                thumbnail_image = resize_image(os.path.join(pilsbry_folder, file_name), 200)
+                move_files(os.path.join(pilsbry_folder, file_name), os.path.join(destination_path, new_file_name))
+                uploaded_file = add_to_digital_ocean(thumbnail_image, pilsbry_folder, "jpg/small", destination_path, unique_file_name)
+                uploaded_file = add_to_digital_ocean(file_name, pilsbry_folder, "jpg/small", destination_path)
+
+                try:
+                    add_to_pilsbry_db(db_conn, uploaded_url, thumbnail_url, img_format, occid, unique_file_name, f"{destination_path}/{new_file_name}")
+                    logging.info(f"Successfully uploaded {file_name} to PILSBRy")
+                except Exception as e:
+                    logging.error(f"Failed to upload {file_name} to PILSBRy")
+                    logging.error(e)
+                    error_folders_count += 1
+                    return
+
             
+            #delete pilsbry folder if empty
             print(list(uploaded_files))
         # if imagetype == "Specimen" and outreachduplicate == "Yes":
         #     if subfamily:
