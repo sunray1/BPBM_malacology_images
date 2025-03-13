@@ -7,6 +7,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import unicodedata
 import re
+import shutil
 
 # Configure logging to both file and console
 logging.basicConfig(
@@ -78,7 +79,7 @@ def move_files(source, destination):
     """Move files from source to destination."""
     try:
         logging.info(f"Moving files from {source} to {destination}")
-        os.system(f"mv {source} {destination}")
+        shutil.move(source, destination)
     except Exception as e:
         logging.error(f"Error moving files from {source} to {destination}")
         logging.error(e)
@@ -87,7 +88,7 @@ def copy_files(source, destination):
     """Copy files from source to destination."""
     try:
         logging.info(f"Copying files from {source} to {destination}")
-        os.system(f"cp {source} {destination}")
+        shutil.copy(source, destination)
     except Exception as e:
         logging.error(f"Error copying files from {source} to {destination}")
         logging.error(e)
