@@ -568,38 +568,42 @@ def process_image_row(row):
             destination_path = os.path.join(base_folder, "Representatives", group_folder, foldername)
 
         # Create necessary folders, move files, and delete source folder
-        #create_folder(destination_path)
-        #add_to_google_sheets(
-        #     occid,
-        #     specimenid,
-        #     phylum,
-        #     taxaclass,
-        #     family,
-        #     subfamily,
-        #     sciname,
-        #     specimen_info.get("identificationQualifier", "") if specimen_info else "",
-        #     catalognumber,
-        #     specimennumber,
-        #     imagetype,
-        #     specimentype,
-        #     specimen_info.get("typestatus", "") if specimen_info else "",
-        #     specimen_info.get("fieldnumber", "") if specimen_info else "",
-        #     boxnumber,
-        #     specimen_info.get("country", "") if specimen_info else "",
-        #     specimen_info.get("stateProvince", "") if specimen_info else "",
-        #     specimen_info.get("island", "") if specimen_info else "",
-        #     specimen_info.get("locality", "") if specimen_info else "",
-        #     plated,
-        #     destination_path
-        # )
+        create_folder(destination_path)
+        add_to_google_sheets(
+            occid,
+            specimenid,
+            phylum,
+            taxaclass,
+            family,
+            subfamily,
+            sciname,
+            specimen_info.get("identificationQualifier", "") if specimen_info else "",
+            catalognumber,
+            specimennumber,
+            imagetype,
+            specimentype,
+            specimen_info.get("typestatus", "") if specimen_info else "",
+            specimen_info.get("fieldnumber", "") if specimen_info else "",
+            boxnumber,
+            specimen_info.get("country", "") if specimen_info else "",
+            specimen_info.get("stateProvince", "") if specimen_info else "",
+            specimen_info.get("island", "") if specimen_info else "",
+            specimen_info.get("locality", "") if specimen_info else "",
+            plated,
+            destination_path
+        )
         if imagetype in ["Specimen", "Type", "Captive"] and has_pilsbry_files(os.path.join(staging_folder, foldername)):
             pilsbry_folder = os.path.join(folder_path, "pilsbry")
             for file_name in os.listdir(pilsbry_folder):
                 new_file_name, unique_file_name = get_new_filenames(file_name)
                 thumbnail_image = resize_image(os.path.join(pilsbry_folder, file_name), 200)
                 move_files(os.path.join(pilsbry_folder, file_name), os.path.join(destination_path, new_file_name))
-                uploaded_file = add_to_digital_ocean(thumbnail_image, pilsbry_folder, "jpg/small", destination_path, unique_file_name)
-                uploaded_file = add_to_digital_ocean(file_name, pilsbry_folder, "jpg/small", destination_path)
+                
+                
+                #uploaded_file = add_to_digital_ocean(thumbnail_image, pilsbry_folder, "jpg/small", destination_path, unique_file_name)
+                #uploaded_file = add_to_digital_ocean(file_name, pilsbry_folder, "jpg/small", destination_path)
+
+
 
                 try:
                     add_to_pilsbry_db(db_conn, uploaded_url, thumbnail_url, img_format, occid, unique_file_name, f"{destination_path}/{new_file_name}")
@@ -611,25 +615,25 @@ def process_image_row(row):
                     return
 
             
-            #delete pilsbry folder if empty
-            print(list(uploaded_files))
-        # if imagetype == "Specimen" and outreachduplicate == "Yes":
-        #     if subfamily:
-        #         outreach_destination_path = os.path.join(base_folder, "Outreach", "Gastropoda", family, subfamily, new_foldername)
-        #         taxaclass = "Gastropoda"
-        #     else:
-        #         outreach_destination_path = os.path.join(base_folder, "Outreach", "Gastropoda", family, new_foldername)
-        #         taxaclass = "Gastropoda"
-        #     create_folder(outreach_destination_path)
-        #     copy_files(os.path.join(staging_folder, foldername, "*"), outreach_destination_path)
-        #move_files(os.path.join(staging_folder, foldername, "*"), destination_path)
+            if not os.listdir(pilsbry_folder):
+                os.rmdir(pilsbry_folder)
+        if imagetype == "Specimen" and outreachduplicate == "Yes":
+            if subfamily:
+                outreach_destination_path = os.path.join(base_folder, "Outreach", "Gastropoda", family, subfamily, new_foldername)
+                taxaclass = "Gastropoda"
+            else:
+                outreach_destination_path = os.path.join(base_folder, "Outreach", "Gastropoda", family, new_foldername)
+                taxaclass = "Gastropoda"
+            create_folder(outreach_destination_path)
+            copy_files(os.path.join(staging_folder, foldername, "*"), outreach_destination_path)
+        move_files(os.path.join(staging_folder, foldername, "*"), destination_path)
         
-        # if delete_folder(os.path.join(staging_folder, foldername)):
-        #    rownum = delete_from_staging_sheet(rownum)
-        #    moved_folders_count += 1
-        # else:
-        #     logging.warning(f"Skipping deletion from staging sheet since folder deletion failed for {foldername}.")
-        #     error_folders_count += 1
+        if delete_folder(os.path.join(staging_folder, foldername)):
+           rownum = delete_from_staging_sheet(rownum)
+           moved_folders_count += 1
+        else:
+            logging.warning(f"Skipping deletion from staging sheet since folder deletion failed for {foldername}.")
+            error_folders_count += 1
 
         logging.info(f"Successfully moved {foldername} to {destination_path}")
 
